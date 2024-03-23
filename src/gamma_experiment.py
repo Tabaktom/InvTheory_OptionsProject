@@ -145,6 +145,8 @@ def main(path, rfr_path, vis=False):
             exp_date_to_strike_dist_from_underlying[str(i)][str(s)] = dist_from_underlying[0]
 
     desired_levels = [0, 0.1, 0.25]
+    time_lag_levels = np.arange(1, 8, 1)
+    time_lag_all_correlations = defaultdict(list)
     desired_levels_colors = ["blue", "green", "orange"]
     chosen_exp_date_strike_levels = get_exp_date_strike_at_desried_levels(exp_date_to_strike_dist_from_underlying, desired_levels)
     chosen_exp_date_strike_levels["EXPIRE_DATE"] = pd.to_datetime(chosen_exp_date_strike_levels["EXPIRE_DATE"])
@@ -211,9 +213,18 @@ def main(path, rfr_path, vis=False):
 
         options_chain_corr = pd.DataFrame.from_dict(options_chain_timeseries).corr()
         if len(options_chain_corr)==10:
+            for time_lag in time_lag_levels:
+                lag_df = pd.DataFrame.from_dict(options_chain_timeseries)
+                lag_df["UNDERLYING_LAST"] = lag_df["UNDERLYING_LAST"].shift(-time_lag)
+                lag_df_values = lag_df.dropna()
+                lag_df_values_corr = np.expand_dims(lag_df_values.corr().values, axis=0)
+                if not np.isnan(np.sum(lag_df_values_corr)):
+                    time_lag_all_correlations[f"LAG_{time_lag}"].append(lag_df_values_corr)
+
             columns = options_chain_corr.columns
+
         options_chain_corr = np.expand_dims(options_chain_corr.values, axis=0)
-        if options_chain_corr.shape == (1, 10, 10):
+        if options_chain_corr.shape == (1, 10, 10) and not np.isnan(np.sum(options_chain_corr)):
             all_correlations.append(options_chain_corr)
         else:
             num_options_missed_count += 1
@@ -223,6 +234,18 @@ def main(path, rfr_path, vis=False):
     all_correlations = np.concatenate(all_correlations, axis=0)
     correlation_mean = pd.DataFrame(np.mean(all_correlations, axis=0), columns=columns, index=columns)
     correlation_std = pd.DataFrame(np.std(all_correlations, axis=0), columns=columns, index=columns)
+
+    lag_corr_dfs = {}
+    for key, corr_matricies_list in time_lag_all_correlations.items():
+        corr_matrix = np.concatenate(corr_matricies_list, axis=0)
+        lag_correlation_mean = pd.DataFrame(np.mean(corr_matrix, axis=0), columns=columns, index=columns)
+        lag_correlation_std = pd.DataFrame(np.std(corr_matrix, axis=0), columns=columns, index=columns)
+        lag_correlation_min = pd.DataFrame(np.min(corr_matrix, axis=0), columns=columns, index=columns)
+        lag_correlation_max = pd.DataFrame(np.max(corr_matrix, axis=0), columns=columns, index=columns)
+        lag_corr_dfs[f"{key}_mean"] = lag_correlation_mean
+        lag_corr_dfs[f"{key}_std"] = lag_correlation_std
+        lag_corr_dfs[f"{key}_min"] = lag_correlation_min
+        lag_corr_dfs[f"{key}_max"] = lag_correlation_max
 
     _=0
 
