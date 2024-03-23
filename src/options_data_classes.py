@@ -153,6 +153,7 @@ def black_scholes_merton(r, sigma, option: Option):
     """
     Calculate the price of vanilla options using BSM formula
     """
+    # output black scholes give me premium price for option
     d1 = (np.log(option.s0 / option.K) + (r + sigma**2 / 2) * option.T) / (sigma * np.sqrt(option.T))
     d2 = d1 - sigma * np.sqrt(option.T)
 
@@ -160,6 +161,8 @@ def black_scholes_merton(r, sigma, option: Option):
     price = price if option.call else price - option.s0 + option.K * np.exp(-r * option.T)
 
     return np.round(price, 2)
+
+
 
 
 def crr_pricing(r=0.1, sigma=0.2, option: Option = Option(s0=100, T=1, K=100, call=False), n=25000):
