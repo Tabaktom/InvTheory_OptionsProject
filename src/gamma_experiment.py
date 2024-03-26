@@ -6,6 +6,8 @@ import numpy as np
 from tqdm import tqdm
 from scipy.stats import norm
 import warnings
+
+from src.gamma_vis import plot_box_and_whisker
 warnings.filterwarnings("ignore")
 
 
@@ -232,24 +234,50 @@ def main(path, rfr_path, vis=False):
 
         # delta, volume (CALL), option price, laggs,
     all_correlations = np.concatenate(all_correlations, axis=0)
-    correlation_mean = pd.DataFrame(np.mean(all_correlations, axis=0), columns=columns, index=columns)
-    correlation_std = pd.DataFrame(np.std(all_correlations, axis=0), columns=columns, index=columns)
+    # correlation_mean = pd.DataFrame(np.mean(all_correlations, axis=0), columns=columns, index=columns)
+    # correlation_std = pd.DataFrame(np.std(all_correlations, axis=0), columns=columns, index=columns)
+    # correlation_upper = pd.DataFrame(np.percentile(all_correlations,75, axis=0), columns=columns, index=columns)
+    # correlation_lower = pd.DataFrame(np.percentile(all_correlations,25, axis=0), columns=columns, index=columns)
+    # correlation_min = pd.DataFrame(np.min(all_correlations, axis=0), columns=columns, index=columns)
+    # correlation_max = pd.DataFrame(np.max(all_correlations, axis=0), columns=columns, index=columns)
 
-    lag_corr_dfs = {}
+    lag_to_corr_df = defaultdict()
+    lag_to_corr_df["LAG_0"] = all_correlations
     for key, corr_matricies_list in time_lag_all_correlations.items():
         corr_matrix = np.concatenate(corr_matricies_list, axis=0)
-        lag_correlation_mean = pd.DataFrame(np.mean(corr_matrix, axis=0), columns=columns, index=columns)
-        lag_correlation_std = pd.DataFrame(np.std(corr_matrix, axis=0), columns=columns, index=columns)
-        lag_correlation_min = pd.DataFrame(np.min(corr_matrix, axis=0), columns=columns, index=columns)
-        lag_correlation_max = pd.DataFrame(np.max(corr_matrix, axis=0), columns=columns, index=columns)
-        lag_corr_dfs[f"{key}_mean"] = lag_correlation_mean
-        lag_corr_dfs[f"{key}_std"] = lag_correlation_std
-        lag_corr_dfs[f"{key}_min"] = lag_correlation_min
-        lag_corr_dfs[f"{key}_max"] = lag_correlation_max
+        lag_to_corr_df[key] = corr_matrix
+
+    plot_box_and_whisker(lag_to_corr_df, columns)
+
+
+
+    # lag_corr_dfs = {}
+    # lag_corr_dfs["LAG_0_mean"] = correlation_mean
+    # lag_corr_dfs["LAG_0_std"] = correlation_std
+    # lag_corr_dfs["LAG_0_upper"] = correlation_upper
+    # lag_corr_dfs["LAG_0_lower"] = correlation_lower
+    # lag_corr_dfs["LAG_0_min"] = correlation_min
+    # lag_corr_dfs["LAG_0_max"] = correlation_max
+    #
+    # for key, corr_matricies_list in time_lag_all_correlations.items():
+    #     corr_matrix = np.concatenate(corr_matricies_list, axis=0)
+    #     lag_correlation_mean = pd.DataFrame(np.mean(corr_matrix, axis=0), columns=columns, index=columns)
+    #     lag_correlation_std = pd.DataFrame(np.std(corr_matrix, axis=0), columns=columns, index=columns)
+    #     lag_correlation_min = pd.DataFrame(np.min(corr_matrix, axis=0), columns=columns, index=columns)
+    #     lag_correlation_lower = pd.DataFrame(np.percentile(corr_matrix, 25, axis=0), columns=columns, index=columns)
+    #     lag_correlation_upper = pd.DataFrame(np.percentile(corr_matrix, 75, axis=0), columns=columns, index=columns)
+    #     lag_correlation_max = pd.DataFrame(np.max(corr_matrix, axis=0), columns=columns, index=columns)
+    #     lag_corr_dfs[f"{key}_mean"] = lag_correlation_mean
+    #     lag_corr_dfs[f"{key}_std"] = lag_correlation_std
+    #     lag_corr_dfs[f"{key}_min"] = lag_correlation_min
+    #     lag_corr_dfs[f"{key}_max"] = lag_correlation_max
+    #     lag_corr_dfs[f"{key}_lower"] = lag_correlation_lower
+    #     lag_corr_dfs[f"{key}_upper"] = lag_correlation_upper
 
     _=0
 
 if __name__ == "__main__":
-    path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/aapl_2016_2020.csv"
+    path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/" \
+           "Data/aapl_2016_2020.csv"
     rfr_path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/DGS10.csv"
     main(path, rfr_path)
