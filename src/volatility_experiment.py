@@ -43,9 +43,10 @@ def main(path, rfr_path, out_dir, vis=False):
     put_plot_df = pd.DataFrame(index=np.arange(15))
     sentiment_plot_df = pd.DataFrame(index=np.arange(15))
     underlying_plot_df = pd.DataFrame(index=np.arange(15))
-
+    implied_vol_smile_tensor = np.zeros((15, len(desired_levels), len(chosen_exp_date_strike_levels)))
     for ind, row in tqdm(chosen_exp_date_strike_levels.iterrows(), desc="Iterating over Options Chain:"):
-        underlying_exist=False
+        implied_vol_smile_matrix = pd.DataFrame(np.zeros((15, len(desired_levels))), columns=desired_levels)
+        underlying_exist = False
         date = row["EXPIRE_DATE"]
         # strike = row["STRIKE"]
         options_chain = df[df["EXPIRE_DATE"]==date]
@@ -53,7 +54,7 @@ def main(path, rfr_path, out_dir, vis=False):
         chosen_exp_date_strike_levels_at_date = chosen_exp_date_strike_levels[chosen_exp_date_strike_levels["EXPIRE_DATE"]==date]
         unique_strikes = chosen_exp_date_strike_levels_at_date["STRIKE"].unique().tolist()
         unique_levels = chosen_exp_date_strike_levels_at_date["LEVEL"].unique().tolist()
-        if len(unique_levels)!=3:
+        if len(unique_levels)!=len(desired_levels):
             continue
         level_zero_index = unique_levels.index(float(0))
         at_money_strike_price = unique_strikes[level_zero_index]
@@ -65,7 +66,7 @@ def main(path, rfr_path, out_dir, vis=False):
             continue
 
         volatility_df = pd.DataFrame()
-        for strike, level in zip(unique_strikes, unique_levels):
+        for level_index, (strike, level) in enumerate(zip(unique_strikes, unique_levels)):
 
             options_chain_strike = options_chain[options_chain["STRIKE"]==strike]
             options_chain_strike = options_chain_strike.set_index("DTE", drop=False).sort_index() # change to quote date
@@ -77,6 +78,17 @@ def main(path, rfr_path, out_dir, vis=False):
                 volatility_df.set_index("DTE", drop=False, inplace=True)
                 volatility_df["PCT_CHANGE_UNDERLYING"] = volatility_df["UNDERLYING_LAST"].pct_change()
 
+            # populate implied vol smile matrix
+            if level == 0:
+                implied_vol_series = options_chain_at_money["C_IV"]
+            elif level > 0:
+                implied_vol_series = options_chain_strike["C_IV"]
+            else:
+                implied_vol_series = options_chain_strike["P_IV"]
+
+            implied_vol_smile_matrix[level] = implied_vol_series
+
+            # calculate IV premium
             if level > 0:
                 # call
                 volatility_premium = options_chain_strike["C_IV"] - options_chain_at_money["C_IV"]
@@ -96,7 +108,7 @@ def main(path, rfr_path, out_dir, vis=False):
                 volatility_df["IV_PUT_PCT_CHANGE"] = options_chain_strike["P_IV"].pct_change()
                 put_plot_df[f"{str(date)}_AT_{strike}"] = volatility_df["PUT_IV_PREM"]
 
-
+        implied_vol_smile_tensor[:, :, ind] = implied_vol_smile_matrix.values
         sentiment_plot_df[str(date)] = volatility_df["CALL_IV_PREM"] - volatility_df["PUT_IV_PREM"]
         volatility_df["VOL_SENTIMENT"] = volatility_df["CALL_IV_PREM"] - volatility_df["PUT_IV_PREM"]
         volatility_df = volatility_df.dropna()
@@ -115,47 +127,75 @@ def main(path, rfr_path, out_dir, vis=False):
         put_volatility_prems_corrs.append(put_corr)
         sentiment_volatility_corrs.append(sent_corr)
 
-    for sent_col, call_col, put_col, under_col in zip(sentiment_plot_df.columns, call_plot_df.columns,
+
+    if vis:
+        iv_prem_out_dir = os.path.join(out_dir, "IV_premium")
+        os.makedirs(iv_prem_out_dir, exist_ok=True)
+        for sent_col, call_col, put_col, under_col in zip(sentiment_plot_df.columns, call_plot_df.columns,
                                                       put_plot_df.columns, underlying_plot_df.columns):
-        path = os.path.join(out_dir, f"Expiry_{under_col}.png")
-        at_money_strike_price = float(under_col.split("AT_")[-1])
-        fig, (ax0, ax1, ax2, ax3) = plt.subplots(nrows=4, sharex=True)
-        # sent_col = sentiment_plot_df.columns[0]
-        # call_col = call_plot_df.columns[0]
-        # put_col = put_plot_df.columns[0]
-        # under_col = underlying_plot_df.columns[0]
+            path = os.path.join(iv_prem_out_dir, f"Expiry_{under_col}.png")
+            at_money_strike_price = float(under_col.split("AT_")[-1])
+            fig, (ax0, ax1, ax2, ax3) = plt.subplots(nrows=4, sharex=True)
+            # sent_col = sentiment_plot_df.columns[0]
+            # call_col = call_plot_df.columns[0]
+            # put_col = put_plot_df.columns[0]
+            # under_col = underlying_plot_df.columns[0]
 
-        underlying_plot_df.sort_index(ascending=False)[under_col].ffill().plot(ax=ax0)
-        ax0.set_xlabel("Days to Expiry")
-        ax0.title.set_text(f'Underlying Asset Price (T-14 at {under_col})')
-        ax0.axhline(y=at_money_strike_price, c="black")
+            underlying_plot_df.sort_index(ascending=False)[under_col].ffill().plot(ax=ax0)
+            ax0.set_xlabel("Days to Expiry")
+            ax0.title.set_text(f'Underlying Asset Price (T-14 at {under_col})')
+            ax0.axhline(y=at_money_strike_price, c="black")
 
-        # ax0.set_xticks(underlying_plot_df.sort_index(ascending=False).index.values)
-        # ax0.invert_xaxis()
+            # ax0.set_xticks(underlying_plot_df.sort_index(ascending=False).index.values)
+            # ax0.invert_xaxis()
 
-        sentiment_plot_df.sort_index(ascending=False)[sent_col].ffill().plot(ax=ax1)
-        ax1.title.set_text(f'Volatility Sentiment Premium (T-14 at {sent_col})')
-        ax1.axhline(y=0, c="black")
-        # ax1.invert_xaxis()
+            sentiment_plot_df.sort_index(ascending=False)[sent_col].ffill().plot(ax=ax1)
+            ax1.title.set_text(f'Volatility Sentiment Premium (T-14 at {sent_col})')
+            ax1.axhline(y=0, c="black")
+            # ax1.invert_xaxis()
 
-        call_plot_df.sort_index(ascending=False)[call_col].ffill().plot(ax=ax2)
-        ax2.title.set_text(f'Call Volatility Premium (T-14 at {call_col})')
-        ax2.axhline(y=0, c="black")
-        # ax2.invert_xaxis()
+            call_plot_df.sort_index(ascending=False)[call_col].ffill().plot(ax=ax2)
+            ax2.title.set_text(f'Call Volatility Premium (T-14 at {call_col})')
+            ax2.axhline(y=0, c="black")
+            # ax2.invert_xaxis()
 
-        put_plot_df.sort_index(ascending=False)[put_col].ffill().plot(ax=ax3)
-        ax3.title.set_text(f'Put Volatility Premium (T-14 at {put_col})')
-        ax3.axhline(y=0, c="black")
-        # ax3.set_xticks(put_plot_df.sort_index(ascending=False).index.values)
-        ax3.invert_xaxis()
-        plt.tight_layout()
+            put_plot_df.sort_index(ascending=False)[put_col].ffill().plot(ax=ax3)
+            ax3.title.set_text(f'Put Volatility Premium (T-14 at {put_col})')
+            ax3.axhline(y=0, c="black")
+            # ax3.set_xticks(put_plot_df.sort_index(ascending=False).index.values)
+            ax3.invert_xaxis()
+            plt.tight_layout()
+
+            # plt.show()
+            plt.savefig(path)
+            plt.clf()
 
 
-        # plt.show()
-        plt.savefig(path)
+            # .interpolate(method='linear').plot()
 
-        # .interpolate(method='linear').plot()
-        _=0
+    # Plot IV Smile for each DTE
+    iv_smile_dir = os.path.join(out_dir, "IV_smile")
+    os.makedirs(iv_smile_dir, exist_ok=True)
+    for dte in range(len(implied_vol_smile_tensor)):
+        file_path = os.path.join(iv_smile_dir, f"IV_smile_Dte_{dte}.png")
+        dte_iv_smile_matrix = implied_vol_smile_tensor[dte, :, :]
+        dte_iv_smile_matrix_mean = np.nanmean(dte_iv_smile_matrix, axis=1)
+        dte_iv_smile_matrix_std = np.nanstd(dte_iv_smile_matrix, axis=1)
+        dte_iv_smile_upper = dte_iv_smile_matrix_mean + dte_iv_smile_matrix_std
+        dte_iv_smile_lower = dte_iv_smile_matrix_mean - dte_iv_smile_matrix_std
+
+        fig = plt.Figure()
+        plt.plot(desired_levels, dte_iv_smile_matrix_mean, label="Mean IV")
+        plt.fill_between(desired_levels, dte_iv_smile_upper, dte_iv_smile_lower, alpha=0.2, label="Mean IV +- 1std")
+        plt.xlabel("Option Strike Price Distance from Underlying Price at T-14")
+        plt.ylabel("Implied Volatility")
+        plt.title(f"Implied Volatility Smile at Days to Expiry={dte}")
+        plt.legend()
+
+        plt.savefig(file_path)
+        plt.clf()
+
+
 
 
 
@@ -164,4 +204,5 @@ if __name__ == "__main__":
            "Data/aapl_2016_2020.csv"
     rfr_path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/DGS10.csv"
     out_dir = "/Volumes/Elements/Options_study/AAPL/"
-    main(path, rfr_path, out_dir)
+    main(path, rfr_path, out_dir, vis=True)
+
