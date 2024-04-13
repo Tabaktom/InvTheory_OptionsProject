@@ -207,14 +207,15 @@ def main(path, rfr_path, out_dir, vis=False):
         plt.clf()
 
 
-def calculate_strategy_performance(path):
+def calculate_strategy_performance(path, distances_from_underlying_spot):
     df = pd.read_csv(path)
     ticker_name = os.path.basename(path).split("_")[0].upper()
 
     exp_date_to_strike_dist_from_underlying, df = get_exp_date_to_strike_dist_from_underlying(df)
-    distances_from_underlying_spot = [0.1, 0.25]
+    # distances_from_underlying_spot = [0.1, 0.25]
     relevant_cols = ["UNDERLYING_LAST", "C_IV", "P_IV", "C_BID", "C_ASK", "P_BID", "P_ASK", "DTE"]
-    for distance_level in distances_from_underlying_spot:
+    all_trades_df = []
+    for distance_level in tqdm(distances_from_underlying_spot):
         desired_levels = [-distance_level, 0, distance_level]
         chosen_exp_date_strike_levels = get_exp_date_strike_at_desried_levels(exp_date_to_strike_dist_from_underlying,
                                                                               desired_levels)
@@ -237,13 +238,14 @@ def calculate_strategy_performance(path):
                 strike_data = strike_data[relevant_cols]
                 contract_data[level_name] = strike_data
 
-            contract_df = get_contract_df(strike_data, contract_data)
-            equity = run_strategy(contract_df, ticker_name)
-            _=0
+            if sum([isinstance(x, pd.DataFrame) for x in list(contract_data.values())])==3:
+                contract_df = get_contract_df(strike_data, contract_data)
+                trades_df = run_strategy(contract_df, ticker_name)
+                all_trades_df.append(trades_df)
 
+    all_trades = pd.concat(all_trades_df, axis=0).reset_index(drop=True)
 
-
-    return
+    return all_trades
 
 
 def get_contract_df(strike_data, contract_data):
@@ -314,7 +316,7 @@ def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, thres
                     trades_df["ExitReason"].iloc[trade_num] = exit_reason
                     trades_df["DayExit"].iloc[trade_num] = ind
                     trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
-                    profit_loss = trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num]
+                    profit_loss = trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num]
                     trades_df["Profit/Loss"].iloc[trade_num] = profit_loss
 
                     trade_num += 1
@@ -325,7 +327,7 @@ def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, thres
                     trades_df["ExitReason"].iloc[trade_num] = exit_reason
                     trades_df["DayExit"].iloc[trade_num] = ind
                     trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
-                    profit_loss = trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num]
+                    profit_loss = trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num]
                     trades_df["Profit/Loss"].iloc[trade_num] = profit_loss
 
                     trade_num += 1
@@ -337,7 +339,7 @@ def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, thres
                     trades_df["ExitReason"].iloc[trade_num] = exit_reason
                     trades_df["DayExit"].iloc[trade_num] = ind
                     trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
-                    profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
+                    profit_loss = -1*(trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num])
                     trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
 
                     trade_num += 1
@@ -348,7 +350,7 @@ def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, thres
                     trades_df["ExitReason"].iloc[trade_num] = exit_reason
                     trades_df["DayExit"].iloc[trade_num] = ind
                     trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
-                    profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
+                    profit_loss = -1*(trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num])
                     trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
 
                     trade_num += 1
@@ -365,7 +367,8 @@ def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, thres
             profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
         trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
 
-    trades_df.dropna()
+    trades_df.dropna(inplace=True)
+    trades_df["ReturnRate"] = trades_df["Profit/Loss"]/trades_df["PriceEnter"]
     return trades_df
 
 
@@ -387,7 +390,7 @@ def get_historical_performance_of_contracts(ticker_name, final_date, num_contrac
     first_date = final_date - timedelta(num_days_back)
     final_date = final_date.strftime("%Y-%m-%d")
     first_date = first_date.strftime("%Y-%m-%d")
-    data = yf.download(ticker_name, first_date, final_date).reset_index(drop=False)
+    data = yf.download(ticker_name, first_date, final_date, progress=False).reset_index(drop=False)
     data["Returns"] = data["Close"].pct_change()
     split_data = np.array_split(data, num_contract_history)
     for ind, contract in enumerate(split_data):
@@ -404,6 +407,35 @@ def get_historical_performance_of_contracts(ticker_name, final_date, num_contrac
     return mean_performance
 
 
+def get_position_daterange(trade: pd.Series, position_type="Long"):
+    if trade.loc["Position"]==position_type:
+        if trade["DayEnter"] == trade["DayExit"]:
+            position_range = [trade["DayEnter"]]
+        else:
+            position_range = pd.date_range(trade["DayEnter"].to_pydatetime().strftime("%Y-%m-%d"),
+                                           trade["DayExit"].to_pydatetime().strftime("%Y-%m-%d"))
+    else:
+
+        position_range = []
+    return position_range
+
+
+def run_experiment(path):
+    distances_from_underlying_spot_all = [0.1, 0.25]
+    distances_from_underlying = [distances_from_underlying_spot_all[0]]
+    trades_df = calculate_strategy_performance(path, distances_from_underlying)
+    ticker_name = os.path.basename(path).split("_")[0].upper()
+
+    spy_data = yf.download(ticker_name, trades_df["DayEnter"].min().strftime("%Y-%m-%d"),
+                           trades_df["DayExit"].max().strftime("%Y-%m-%d"), progress=False).reset_index(drop=False)
+    spy_equity = spy_data["Adj Close"]/spy_data["Adj Close"].iloc[0]
+    is_long_dates = trades_df.apply(lambda x: get_position_daterange(x, position_type="LONG"), axis=1)
+    is_short_dates = trades_df.apply(lambda x: get_position_daterange(x, position_type="SHORT"), axis=1)
+    _=0
+
+    return
+
+
 
 
 if __name__ == "__main__":
@@ -411,6 +443,7 @@ if __name__ == "__main__":
            "Data/aapl_2016_2020.csv"
     rfr_path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/DGS10.csv"
     out_dir = "/Volumes/Elements/Options_study/AAPL/"
+    run_experiment(path)
     # main(path, rfr_path, out_dir, vis=False)
-    calculate_strategy_performance(path)
+
 
