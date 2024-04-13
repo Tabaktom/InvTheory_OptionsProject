@@ -2,6 +2,8 @@ import warnings
 from tqdm import tqdm
 import os
 from collections import defaultdict
+import yfinance as yf
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from src.utils import *
 warnings.filterwarnings("ignore")
@@ -207,6 +209,8 @@ def main(path, rfr_path, out_dir, vis=False):
 
 def calculate_strategy_performance(path):
     df = pd.read_csv(path)
+    ticker_name = os.path.basename(path).split("_")[0].upper()
+
     exp_date_to_strike_dist_from_underlying, df = get_exp_date_to_strike_dist_from_underlying(df)
     distances_from_underlying_spot = [0.1, 0.25]
     relevant_cols = ["UNDERLYING_LAST", "C_IV", "P_IV", "C_BID", "C_ASK", "P_BID", "P_ASK", "DTE"]
@@ -234,6 +238,7 @@ def calculate_strategy_performance(path):
                 contract_data[level_name] = strike_data
 
             contract_df = get_contract_df(strike_data, contract_data)
+            equity = run_strategy(contract_df, ticker_name)
             _=0
 
 
@@ -263,17 +268,140 @@ def get_contract_df(strike_data, contract_data):
     return contract_df
 
 
-def run_strategy(contract_df):
+def run_strategy(contract_df, ticker_name, threshold_delta_for_entry=0.02, threshold_for_reversal_exit=0.005):
     equity = None
-    trades_df = pd.DataFrame(columns=["DayEnter", "DayExit", "Premium_Amount", "ExpiryAmount", "Profit/Loss"])
-
+    trades_df = pd.DataFrame(columns=["DayEnter", "DayExit", "PriceEnter", "PriceExit", "Position",
+                                      "Profit/Loss", "ExitReason"], index=np.arange(len(contract_df)))
+    equity_df = pd.DataFrame(columns=["Equity", "Returns", "PositionType",
+                                      "CallIVPrem", "PutIVPrem"], index=contract_df.index)
+    equity_df["CallIVPrem"] = contract_df["CALL_IV_PREM"]
+    equity_df["PutIVPrem"] = contract_df["PUT_IV_PREM"]
     position = None
+    entry_price = None
+    average_historical_returns = get_historical_performance_of_contracts(ticker_name, contract_df.index[0])
+
+    trade_num = 0
     for ind, row in contract_df.iterrows():
-        pass
+        exit_reason = np.nan
+        current_position_return = mark_position_to_market(position, entry_price, row)
+        equity_df["Returns"].loc[ind] = current_position_return
+        if position is None:
+
+            if row["CALL_IV_PREM"]>row["PUT_IV_PREM"]:
+                skew = row["CALL_IV_PREM"]-row["PUT_IV_PREM"]
+                if skew > threshold_delta_for_entry:
+                    position = "LONG"
+                    entry_price = row["UNDERLYING_LAST"]
+                    trades_df["DayEnter"].iloc[trade_num] = ind
+                    trades_df["PriceEnter"].iloc[trade_num] = entry_price
+                    trades_df["Position"].iloc[trade_num] = position
+
+            elif row["PUT_IV_PREM"]>row["CALL_IV_PREM"]:
+                skew = row["PUT_IV_PREM"] - row["CALL_IV_PREM"]
+                if skew > threshold_delta_for_entry:
+                    position = "SHORT"
+                    entry_price = row["UNDERLYING_LAST"]
+                    trades_df["DayEnter"].iloc[trade_num] = ind
+                    trades_df["PriceEnter"].iloc[trade_num] = entry_price
+                    trades_df["Position"].iloc[trade_num] = position
+
+        else:
+            if position == "LONG":
+
+                if current_position_return >= average_historical_returns["Max"]:
+                    position = None
+                    exit_reason = "TargetHit"
+                    trades_df["ExitReason"].iloc[trade_num] = exit_reason
+                    trades_df["DayExit"].iloc[trade_num] = ind
+                    trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
+                    profit_loss = trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num]
+                    trades_df["Profit/Loss"].iloc[trade_num] = profit_loss
+
+                    trade_num += 1
+
+                elif row["CALL_IV_PREM"]-row["PUT_IV_PREM"] <= threshold_for_reversal_exit:
+                    position = None
+                    exit_reason = "Reversal"
+                    trades_df["ExitReason"].iloc[trade_num] = exit_reason
+                    trades_df["DayExit"].iloc[trade_num] = ind
+                    trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
+                    profit_loss = trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num]
+                    trades_df["Profit/Loss"].iloc[trade_num] = profit_loss
+
+                    trade_num += 1
+
+            elif position == "SHORT":
+                if current_position_return >= abs(average_historical_returns["Min"]):
+                    position = None
+                    exit_reason = "TargetHit"
+                    trades_df["ExitReason"].iloc[trade_num] = exit_reason
+                    trades_df["DayExit"].iloc[trade_num] = ind
+                    trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
+                    profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
+                    trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
+
+                    trade_num += 1
+
+                elif row["PUT_IV_PREM"] - row["CALL_IV_PREM"] <= threshold_for_reversal_exit:
+                    position = None
+                    exit_reason = "Reversal"
+                    trades_df["ExitReason"].iloc[trade_num] = exit_reason
+                    trades_df["DayExit"].iloc[trade_num] = ind
+                    trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
+                    profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
+                    trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
+
+                    trade_num += 1
+
+    if not position is None:
+        position = None
+        exit_reason = "Expiry"
+        trades_df["ExitReason"].iloc[trade_num] = exit_reason
+        trades_df["DayExit"].iloc[trade_num] = ind
+        trades_df["PriceExit"].iloc[trade_num] = row["UNDERLYING_LAST"]
+        if trades_df["Position"].iloc[trade_num] == "LONG":
+            profit_loss = trades_df["PriceEnter"].iloc[trade_num] - trades_df["PriceExit"].iloc[trade_num]
+        else:
+            profit_loss = abs(trades_df["PriceExit"].iloc[trade_num] - trades_df["PriceEnter"].iloc[trade_num])
+        trades_df["Profit/Loss"].iloc[trade_num] = round(profit_loss, 4)
+
+    trades_df.dropna()
+    return trades_df
 
 
-    return equity
+def mark_position_to_market(position, entry_price, row):
+    current_price = row["UNDERLYING_LAST"]
+    if position is None:
+        current_return = 0
+    elif position == "LONG":
+        current_return = (current_price - entry_price)/entry_price
+    elif position == "SHORT":
+        current_return = (entry_price - current_price) / entry_price
+    return current_return
 
+
+def get_historical_performance_of_contracts(ticker_name, final_date, num_contract_history=10):
+    historical_performance = pd.DataFrame(columns=["Min", "Max", "Mean", "Std"], index=np.arange(num_contract_history))
+    num_days_back = num_contract_history*14
+    final_date = final_date.to_pydatetime()
+    first_date = final_date - timedelta(num_days_back)
+    final_date = final_date.strftime("%Y-%m-%d")
+    first_date = first_date.strftime("%Y-%m-%d")
+    data = yf.download(ticker_name, first_date, final_date).reset_index(drop=False)
+    data["Returns"] = data["Close"].pct_change()
+    split_data = np.array_split(data, num_contract_history)
+    for ind, contract in enumerate(split_data):
+        contract.reset_index(drop=True)
+        contract_cumulative_returns = contract["Close"].apply(lambda x: (contract["Close"].iloc[0]-x)/
+                                                                        contract["Close"].iloc[0])
+        contract["CumReturns"] = contract_cumulative_returns
+        historical_performance["Min"].iloc[ind] = contract_cumulative_returns.min()
+        historical_performance["Max"].iloc[ind] = contract_cumulative_returns.max()
+        historical_performance["Mean"].iloc[ind] = contract_cumulative_returns.mean()
+        historical_performance["Std"].iloc[ind] = contract_cumulative_returns.std()
+
+    mean_performance = historical_performance.mean()
+    return mean_performance
 
 
 
