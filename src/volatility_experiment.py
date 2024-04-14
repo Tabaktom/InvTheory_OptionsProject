@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from src.utils import *
 warnings.filterwarnings("ignore")
 from itertools import chain
+import scipy.stats
 
 
 def get_exp_date_to_strike_dist_from_underlying(df):
@@ -291,8 +292,8 @@ def run_strategy(contract_df, ticker_name, expiry_date, threshold_delta_for_entr
         equity_df["Returns"].loc[ind] = current_position_return
         if position is None:
 
-            if row["CALL_IV_PREM"]>row["PUT_IV_PREM"]:
-                skew = row["CALL_IV_PREM"]-row["PUT_IV_PREM"]
+            if row["PUT_IV_PREM"]>row["CALL_IV_PREM"]:
+                skew = row["PUT_IV_PREM"] - row["CALL_IV_PREM"]
                 if skew > threshold_delta_for_entry:
                     position = "LONG"
                     entry_price = row["UNDERLYING_LAST"]
@@ -300,8 +301,8 @@ def run_strategy(contract_df, ticker_name, expiry_date, threshold_delta_for_entr
                     trades_df["PriceEnter"].iloc[trade_num] = entry_price
                     trades_df["Position"].iloc[trade_num] = position
 
-            elif row["PUT_IV_PREM"]>row["CALL_IV_PREM"]:
-                skew = row["PUT_IV_PREM"] - row["CALL_IV_PREM"]
+            elif row["CALL_IV_PREM"]>row["PUT_IV_PREM"]:
+                skew = row["CALL_IV_PREM"]-row["PUT_IV_PREM"]
                 if skew > threshold_delta_for_entry:
                     position = "SHORT"
                     entry_price = row["UNDERLYING_LAST"]
@@ -436,6 +437,10 @@ class EquityCalculator():
 
 
 def get_strategy_returns_and_equity(trades_df, ticker_returns, position_type="LONG"):
+    equity = pd.DataFrame(columns=[f"Equity_{position_type}"], index=ticker_returns.index)
+    if position_type == "SHORT":
+        ticker_returns = -1*ticker_returns
+
     is_long_dates = trades_df.apply(lambda x: get_position_daterange(x, position_type=position_type), axis=1)
     is_long_dates = flatten_chain(is_long_dates.values)
     is_long_df = pd.DataFrame.from_dict({"Date": is_long_dates, position_type: np.ones(len(is_long_dates))})
@@ -446,10 +451,82 @@ def get_strategy_returns_and_equity(trades_df, ticker_returns, position_type="LO
     long_equity_calculator = EquityCalculator()
     is_long_returns = is_long_df.join(ticker_returns, on="Date").dropna()
     is_long_equity = is_long_returns.apply(lambda x: long_equity_calculator.calculate(x), axis=1)
-    return is_long_returns, is_long_equity
+    equity[f"Equity_{position_type}"] = is_long_equity["Adj Close"]
+    equity[f"Equity_{position_type}"] = equity[f"Equity_{position_type}"].ffill()
+    equity[f"Equity_{position_type}"] = equity[f"Equity_{position_type}"].fillna(1)
+    return is_long_returns, equity
+
+def get_strategy_equity(is_long_returns, is_short_returns, ticker_returns):
+    equity = pd.DataFrame(columns=[f"Equity"], index=ticker_returns.index)
+    equity["LongReturns"] = is_long_returns["Adj Close"]
+    equity["ShortReturns"] = is_short_returns["Adj Close"]
+    equity["Returns"] = equity["LongReturns"].fillna(0) + equity["ShortReturns"].fillna(0)
+    equity_calculator = EquityCalculator()
+    strategy_equity = equity["Returns"].apply(lambda x: equity_calculator.calculate(x))
+    strategy_equity = strategy_equity.rename("Strategy_Equity")
+    strategy_equity.drop(columns=["Returns"], inplace=True)
+
+    return strategy_equity, equity["Returns"]
 
 
-def run_experiment(path):
+def plot_equities(strategy_equity, ticker_equity, is_long_equity, is_short_equity, outdir):
+    out_path = os.path.join(outdir, "equity.png")
+
+    ticker_equity = ticker_equity.rename("Underlying_Asset")
+
+    fig, (axis, axis1) = plt.subplots(nrows=2, sharex=True, figsize=(15, 10))
+    strategy_equity.plot(ax=axis)
+    ticker_equity.plot(ax=axis)
+    is_long_equity["Equity_LONG"].plot(ax=axis)
+    is_short_equity["Equity_SHORT"].plot(ax=axis)
+    axis.set_xlabel("Date")
+    axis.set_ylabel("Returns")
+    axis.title.set_text(f'Strategy Performance with Overall Strategy')
+    axis.legend()
+
+    ticker_equity.plot(ax=axis1, color="orange")
+    is_long_equity["Equity_LONG"].plot(ax=axis1, color="green")
+    is_short_equity["Equity_SHORT"].plot(ax=axis1, color="red")
+    axis1.set_xlabel("Date")
+    axis1.set_ylabel("Returns")
+    axis1.title.set_text(f'Strategy Performance without Overall Strategy')
+    axis1.legend()
+    plt.tight_layout()
+
+    plt.savefig(out_path)
+    plt.clf()
+
+def plot_returns(long_returns, short_returns, strategy_returns, outdir):
+    short_returns = short_returns.rename("Short Returns")
+    long_returns = long_returns.rename("Long Returns")
+
+    out_path = os.path.join(outdir, "returns.png")
+
+    fig, (ax, ax1, ax2) = plt.subplots(nrows=3, sharex=True, figsize=(10, 10))
+
+    strategy_returns.plot.hist(normed=1, bins=100, alpha=0.8, color="blue", ax=ax)
+    ax.legend()
+    ax.title.set_text(f"Overall Strategy Daily Returns")
+
+    long_returns.plot.hist(normed=1, bins=100, alpha=0.6, color="green", ax=ax1)
+    ax1.legend()
+    ax1.title.set_text(f"Long Only Strategy Daily Returns")
+
+    short_returns.plot.hist(normed=1, bins=100, alpha=0.4, color="red", ax=ax2)
+    ax2.set_xlabel("Rate of Return")
+    ax2.title.set_text(f"Short Only Strategy Daily Returns")
+
+    ax2.legend()
+    plt.tight_layout()
+
+    plt.savefig(out_path)
+    plt.clf()
+
+
+
+def run_experiment(path, outdir):
+    outdir = os.path.join(outdir, "Strategy")
+    os.makedirs(outdir, exist_ok=True)
     distances_from_underlying_spot_all = [0.1, 0.25]
     distances_from_underlying = [distances_from_underlying_spot_all[0]]
     trades_df = calculate_strategy_performance(path, distances_from_underlying)
@@ -464,8 +541,10 @@ def run_experiment(path):
     is_long_returns, is_long_equity = get_strategy_returns_and_equity(trades_df, ticker_returns, position_type="LONG")
     is_short_returns, is_short_equity = get_strategy_returns_and_equity(trades_df, ticker_returns, position_type="SHORT")
 
-    _=0
+    strategy_equity, strategy_returns = get_strategy_equity(is_long_returns, is_short_returns, ticker_returns)
 
+    plot_equities(strategy_equity, ticker_equity, is_long_equity, is_short_equity, outdir)
+    plot_returns(is_long_returns["Adj Close"], is_short_returns["Adj Close"], strategy_returns, outdir)
     return
 
 
@@ -476,7 +555,7 @@ if __name__ == "__main__":
            "Data/aapl_2016_2020.csv"
     rfr_path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/DGS10.csv"
     out_dir = "/Volumes/Elements/Options_study/AAPL/"
-    run_experiment(path)
-    # main(path, rfr_path, out_dir, vis=False)
+    main(path, rfr_path, out_dir, vis=False)
+    run_experiment(path, out_dir)
 
 
