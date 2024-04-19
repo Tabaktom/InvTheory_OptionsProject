@@ -614,11 +614,10 @@ def run_experiment(path, outdir):
 
 
 if __name__ == "__main__":
-    path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/" \
-           "Data/aapl_2016_2020.csv"
+    path = "/Volumes/Elements/Options_study/DATA/aapl_2016_2020.csv"
     rfr_path = "/Users/tom/Desktop/MBA/SemesterA/InvestmentTheory/Project/Data/DGS10.csv"
     out_dir = "/Volumes/Elements/Options_study/AAPL/"
-    main(path, rfr_path, out_dir, vis=False)
+    # main(path, rfr_path, out_dir, vis=False)
     run_experiment(path, out_dir)
 
 
