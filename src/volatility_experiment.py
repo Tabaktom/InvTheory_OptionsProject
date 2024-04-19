@@ -9,6 +9,7 @@ from src.utils import *
 warnings.filterwarnings("ignore")
 from itertools import chain
 import scipy.stats
+import seaborn as sns
 
 
 def get_exp_date_to_strike_dist_from_underlying(df):
@@ -17,10 +18,12 @@ def get_exp_date_to_strike_dist_from_underlying(df):
     df = df[df["DTE"] <= 14]
     unique_exp_dates = df["EXPIRE_DATE"].unique()
 
+    total_num_strikes = 0
     exp_date_to_strike_dist_from_underlying = defaultdict(defaultdict)
     for i in unique_exp_dates:
         sub_df = df[df["EXPIRE_DATE"] == i]
         unique_strikes = sub_df["STRIKE"].unique()
+        total_num_strikes += len(unique_strikes)
         for s in unique_strikes:
             s_df = sub_df[sub_df["STRIKE"] == s]
             max_dte = s_df["DTE"].max()
@@ -523,6 +526,47 @@ def plot_returns(long_returns, short_returns, strategy_returns, outdir):
     plt.clf()
 
 
+def get_month_returns(strategy_equity):
+    strategy_equity = strategy_equity.rename("Equity")
+    strategy_equity = strategy_equity.to_frame()
+    dates = strategy_equity.index
+    strategy_equity["Date"]=pd.to_datetime(dates)
+    strategy_equity["Month"] = strategy_equity["Date"].apply(lambda x: x.month)
+    strategy_equity["Year"] = strategy_equity["Date"].apply(lambda x: x.year)
+
+    months_year_pairs = [(i.month, i.year) for i in dates]
+    unique_month_year = list(set(months_year_pairs))
+    month_returns = {}
+    for (month, year) in unique_month_year:
+
+        month_year_returns = strategy_equity[strategy_equity["Month"]==month]
+        month_year_returns = month_year_returns[month_year_returns["Year"]==year]
+        equity = month_year_returns["Equity"].values
+        returns = (equity[-1]-equity[0])/equity[0]
+        month_returns[f"{month}_{year}"] = returns
+
+    unique_month = [str(i) for i in strategy_equity["Month"].unique()]
+    unique_year = [str(i) for i in strategy_equity["Year"].unique()]
+    returns_df = pd.DataFrame(columns=unique_year, index=unique_month)
+    for period, ret in month_returns.items():
+        comp = period.split("_")
+        month, year = comp[0], comp[1]
+        returns_df[year].loc[month] = ret
+    returns_df = returns_df.astype("float64")
+    return returns_df.round(4)
+
+
+def plot_monthly_returns(strategy_month_returns, name: str, returns_name: str, out_dir: str):
+    path = os.path.join(out_dir, f"{name}.png")
+    ax = sns.heatmap(strategy_month_returns, annot=True, cmap="RdYlGn", center=0)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Month")
+    ax.set_title(f"{returns_name} {name}")
+
+    plt.savefig(path)
+    plt.clf()
+
+
 
 def run_experiment(path, outdir):
     outdir = os.path.join(outdir, "Strategy")
@@ -542,6 +586,25 @@ def run_experiment(path, outdir):
     is_short_returns, is_short_equity = get_strategy_returns_and_equity(trades_df, ticker_returns, position_type="SHORT")
 
     strategy_equity, strategy_returns = get_strategy_equity(is_long_returns, is_short_returns, ticker_returns)
+    strategy_month_returns = get_month_returns(strategy_equity)
+    long_month_returns = get_month_returns(is_long_equity["Equity_LONG"])
+    short_month_returns = get_month_returns(is_short_equity["Equity_SHORT"])
+    ticker_month_returns = get_month_returns(ticker_equity)
+
+    plot_monthly_returns(strategy_month_returns, name="Full Strategy", returns_name="Monthly Returns", out_dir=out_dir)
+    plot_monthly_returns(long_month_returns, name="Long Only Strategy", returns_name="Monthly Returns", out_dir=out_dir)
+    plot_monthly_returns(short_month_returns, name="Short Only Strategy", returns_name="Monthly Returns", out_dir=out_dir)
+    plot_monthly_returns(ticker_month_returns, name="Buy-Hold Strategy", returns_name="Monthly Returns",  out_dir=out_dir)
+
+    alpha_strat = strategy_month_returns - ticker_month_returns
+    plot_monthly_returns(alpha_strat, name="Full Strategy ", returns_name="Alpha Monthly Returns over BHS for", out_dir=out_dir)
+
+    alpha_long = long_month_returns - ticker_month_returns
+    plot_monthly_returns(alpha_long, name="Long Only Strategy ", returns_name="Alpha Monthly Returns over BHS for" ,out_dir=out_dir)
+
+    alpha_short = short_month_returns - ticker_month_returns
+    plot_monthly_returns(alpha_short, name="Short Only Strategy ",
+                         returns_name="Alpha Monthly Returns over BHS for", out_dir = out_dir)
 
     plot_equities(strategy_equity, ticker_equity, is_long_equity, is_short_equity, outdir)
     plot_returns(is_long_returns["Adj Close"], is_short_returns["Adj Close"], strategy_returns, outdir)
@@ -557,5 +620,6 @@ if __name__ == "__main__":
     out_dir = "/Volumes/Elements/Options_study/AAPL/"
     main(path, rfr_path, out_dir, vis=False)
     run_experiment(path, out_dir)
+
 
 
